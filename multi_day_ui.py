@@ -64,7 +64,7 @@ def get_unique_ips(csv1: Sequence[Sequence[str]], csv2: Sequence[Sequence[str]])
 
     ip_list1 = _extract_ip_list(csv1)
     ip_list2 = _extract_ip_list(csv2)
-    combined_ips = ip_list1  ip_list2
+    combined_ips = ip_list1 + ip_list2
     seen = set()
     unique_ips: List[str] = []
     for ip in combined_ips:
@@ -200,7 +200,7 @@ def _process_single_day(
             queue_,
             row_index,
             message="Failed to read CSV files",
-            append_log=f"Row {row_index  1}: {exc}",
+            append_log=f"Row {row_index + 1}: {exc}",
         )
         return
 
@@ -226,16 +226,16 @@ def _process_single_day(
             with temp_path.open("w", encoding="utf-8") as temp_file:
                 for future in concurrent.futures.as_completed(futures):
                     ip, data, error = future.result()
-                    completed_count = 1
+                    completed_count += 1
 
                     if data:
-                        temp_file.write(json.dumps(data)  "\n")
+                        temp_file.write(json.dumps(data) + "\n")
                         successful_responses.append(data)
                     else:
                         _update_status(
                             queue_,
                             row_index,
-                            append_log=f"Row {row_index  1} - {ip}: {error}",
+                            append_log=f"Row {row_index + 1} - {ip}: {error}",
                         )
 
                     _update_status(
@@ -266,14 +266,14 @@ def _process_single_day(
             row_index,
             progress=100.0,
             message=f"Completed ({len(cleared_list)} suspicious IPs)",
-            append_log=f"Row {row_index  1}: wrote {len(cleared_list)} entries to {export_path}",
+            append_log=f"Row {row_index + 1}: wrote {len(cleared_list)} entries to {export_path}",
         )
     except Exception as exc:  # pragma: no cover - best effort logging
         _update_status(
             queue_,
             row_index,
             message="Failed to write output",
-            append_log=f"Row {row_index  1}: {exc}",
+            append_log=f"Row {row_index + 1}: {exc}",
         )
 
 
@@ -521,12 +521,12 @@ class MultiDayApp:
                 elif event == "log":
                     message = payload.get("message", "")
                     if message:
-                        self.log_output.insert(END, message  "\n")
+                        self.log_output.insert(END, message + "\n")
                         self.log_output.see(END)
                 else:
                     message = payload.get("message", "")
                     if message:
-                        self.log_output.insert(END, message  "\n")
+                        self.log_output.insert(END, message + "\n")
                         self.log_output.see(END)
         except queue.Empty:
             pass
@@ -549,7 +549,7 @@ class MultiDayApp:
 
         append_log = payload.get("append_log")
         if append_log:
-            self.log_output.insert(END, append_log  "\n")
+            self.log_output.insert(END, append_log + "\n")
             self.log_output.see(END)
 
     def run(self) -> None:
