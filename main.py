@@ -1,30 +1,61 @@
-# 4d4MP's AbuseIPDB Bulk Checker
+"""4d4MP's AbuseIPDB Bulk Checker GUI application."""
 
-import csv          #implements classes to read and write tabular data in CSV format
-import requests     #allows sending/receiving HTTP requests
-import json         #parse JSON strings
-import os           #provides functions for interacting with the operating system
-import tkinter as tk    #GUI toolkit
-from tkinter import filedialog, ttk, messagebox #filedialog: open/save files; ttk: themed widgets; messagebox: display message boxes
-import time        #time-related functions
-import concurrent.futures #for parallel computing
+from __future__ import annotations
 
-def read_csv(file_path):
-    with open(file_path, 'r') as csvfile:
+import concurrent.futures
+import csv
+import json
+import os
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+import requests
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+
+IP_HEADERS: Tuple[str, ...] = ("SrcIpAddr", "SourceIP")
+API_RESPONSE_FIELDS: Tuple[str, ...] = (
+    "ipAddress",
+    "abuseConfidenceScore",
+    "isp",
+    "domain",
+    "countryCode",
+    "totalReports",
+    "lastReportedAt",
+)
+
+
+def read_csv(file_path: str) -> List[List[str]]:
+    """Return a list of rows from a CSV file."""
+
+    with open(file_path, "r", newline="", encoding="utf-8") as csvfile:
         reader = csv.reader(csvfile)
         return [row for row in reader]
 
-def extract_ip_list(csv_data):
-    header = csv_data[0]
-    column_name = "SrcIpAddr" if "SrcIpAddr" in header else "SourceIP" if "SourceIP" in header else None
-    print("Extracting: " + str(len(csv_data)) + " - " + str(column_name))
-    if column_name is None:
-        raise ValueError("Neither 'SrcIpAddr' nor 'SourceIP' found in CSV header")
-    column_index = header.index(column_name)
-#    return {row[column_index].strip() for row in csv_data[1:]}
-    return [row[column_index].strip() for row in csv_data[1:]]
 
-def get_unique_ips_custom(csv1, csv2):
+def _resolve_ip_header(header: Sequence[str]) -> str:
+    """Return the header name used for IP addresses."""
+
+    for candidate in IP_HEADERS:
+        if candidate in header:
+            return candidate
+    raise ValueError("Neither 'SrcIpAddr' nor 'SourceIP' found in CSV header")
+
+
+def extract_ip_list(csv_data: Sequence[Sequence[str]]) -> List[str]:
+    """Extract a list of IP addresses from the provided CSV data."""
+
+    if not csv_data:
+        return []
+
+    header = csv_data[0]
+    column_name = _resolve_ip_header(header)
+    print("Extracting: " + str(len(csv_data)) + " - " + str(column_name))
+    column_index = header.index(column_name)
+    return [row[column_index].strip() for row in csv_data[1:] if len(row) > column_index]
+
+
+def get_unique_ips_custom(csv1: Sequence[Sequence[str]], csv2: Sequence[Sequence[str]]) -> Iterable[str]:
     ip_list1 = extract_ip_list(csv1)
     ip_list2 = extract_ip_list(csv2)
     print("ip_list1: " + str(len(ip_list1)))
@@ -32,132 +63,152 @@ def get_unique_ips_custom(csv1, csv2):
     print(len(set(ip_list1).symmetric_difference(set(ip_list2))))
     return set(ip_list1).symmetric_difference(set(ip_list2))
 
-def get_unique_ips(csv1, csv2):
+
+def get_unique_ips(csv1: Sequence[Sequence[str]], csv2: Sequence[Sequence[str]]) -> List[str]:
+    """Return IPs from both CSVs, preserving the first occurrence order."""
+
     ip_list1 = extract_ip_list(csv1)
     ip_list2 = extract_ip_list(csv2)
     combined_ips = ip_list1 + ip_list2
-    # Remove duplicates while preserving the order
     seen = set()
-    unique_ips = []
+    unique_ips: List[str] = []
     for ip in combined_ips:
-        if ip not in seen:
+        if ip and ip not in seen:
             unique_ips.append(ip)
             seen.add(ip)
     print("Number of unique IPs: " + str(len(unique_ips)))
     return unique_ips
 
-def clear_output(data_list, min_entry, whitelist_entry):
+
+def clear_output(data_list: Iterable[Dict[str, object]], min_entry: str, whitelist_entry: str) -> List[Dict[str, object]]:
+    """Filter API responses by minimum reports and ISP whitelist."""
+
+    whitelist = [w.strip() for w in whitelist_entry.split(",") if w.strip()]
+    threshold = int(min_entry)
     return_list = []
-    whitelist = [w.strip() for w in whitelist_entry.split(",")]
     for line in data_list:
-        isp = line['isp'] if line['isp'] is not None else ""
-        if line['totalReports'] > int(min_entry) and not any(whitelisted in isp for whitelisted in whitelist):
+        isp = (line.get("isp") if isinstance(line, dict) else None) or ""
+        total_reports = int(line.get("totalReports", 0)) if isinstance(line, dict) else 0
+        if total_reports > threshold and not any(whitelisted in isp for whitelisted in whitelist):
             return_list.append(line)
 
     print("Number of malicious IPs: " + str(len(return_list)))
 
     return return_list
 
-def write_output_file(cleared_list, export_path):
-    # Define the header keys that we expect in each dictionary
-    keys = ['ipAddress', 'abuseConfidenceScore', 'isp', 'domain', 'countryCode', 'totalReports', 'lastReportedAt']
-    
-    # Open the export file in write mode
-    with open(export_path, 'w', newline='') as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=keys)
-        writer.writeheader()  # Write the header row
+
+def write_output_file(cleared_list: Sequence[Dict[str, object]], export_path: str) -> None:
+    """Write the processed results to a CSV file."""
+
+    with open(export_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=API_RESPONSE_FIELDS)
+        writer.writeheader()
         writer.writerows(cleared_list)
 
-def bulk_check(csv_path, csv_path2, api_key, export_path, min_entry, whitelist_entry, progress, output_box):
+
+def _update_output_box(output_box: tk.Text, message: str) -> None:
+    output_box.delete("1.0", tk.END)
+    output_box.insert(tk.END, message)
+    output_box.update_idletasks()
+
+
+def bulk_check(
+    csv_path: str,
+    csv_path2: str,
+    api_key: str,
+    export_path: str,
+    min_entry: str,
+    whitelist_entry: str,
+    progress: ttk.Progressbar,
+    output_box: tk.Text,
+) -> List[Dict[str, object]]:
     csv1 = read_csv(csv_path)
     csv2 = read_csv(csv_path2)
     ip_list = get_unique_ips(csv1, csv2)
 
-    start_time = time.time()
-    json_temp_path = os.path.join(os.path.dirname(export_path), 'aipdbulkchecktempfile.json')
-    total_rows = len(ip_list)
-    api_return_list = []
+    json_temp_path = os.path.join(os.path.dirname(export_path), "aipdbulkchecktempfile.json")
+    total_rows = max(len(ip_list), 1)
+    api_return_list: List[Dict[str, object]] = []
 
-    def fetch_ip_data(ip):
-        """Helper function to fetch data for a single IP"""
+    def fetch_ip_data(ip: str) -> Tuple[str, Dict[str, object] | None, str | None]:
+        """Helper function to fetch data for a single IP."""
+
         try:
             response = requests.get(
-                f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}", 
-                headers={'Accept': 'application/json', 'Key': api_key},
-                timeout=10  # Add timeout to prevent hanging requests
+                f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}",
+                headers={"Accept": "application/json", "Key": api_key},
+                timeout=10,
             )
             if response.status_code == 200:
                 return ip, response.json(), None
-            else:
-                return ip, None, f"API error: {response.status_code}"
-        except Exception as e:
-            return ip, None, str(e)
+            return ip, None, f"API error: {response.status_code}"
+        except Exception as exc:  # pragma: no cover - best effort logging
+            return ip, None, str(exc)
 
-    # Use ThreadPoolExecutor for parallel requests
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        # Submit all requests
         futures = {executor.submit(fetch_ip_data, ip): ip for ip in ip_list}
-        
-        completed_count = 0
-        successful_responses = []
 
-        with open(json_temp_path, 'w') as json_file:
+        completed_count = 0
+        successful_responses: List[Dict[str, object]] = []
+
+        with open(json_temp_path, "w", encoding="utf-8") as json_file:
             for future in concurrent.futures.as_completed(futures):
                 ip, data, error = future.result()
                 completed_count += 1
-                
+
                 if data:
                     json_file.write(json.dumps(data) + "\n")
                     successful_responses.append(data)
                     print(f"\rNumber of successful API calls: {len(successful_responses)}", end="", flush=True)
                 else:
-                    # Handle errors
-                    output_box.delete('1.0', tk.END)
-                    output_box.insert(tk.END, f"{ip} error: {error}")
+                    _update_output_box(output_box, f"{ip} error: {error}")
 
-                # Update progress
-                progress['value'] = completed_count / total_rows * 100
-                output_box.delete('1.0', tk.END)
-                output_box.insert(tk.END, f"Processing {completed_count} of {total_rows}")
-                output_box.update_idletasks()
+                progress["value"] = completed_count / total_rows * 100
+                _update_output_box(output_box, f"Processing {completed_count} of {len(ip_list)}")
 
-    # Process the results
-    with open(json_temp_path, 'r') as json_file:
-        keys = ['ipAddress', 'abuseConfidenceScore', 'isp', 'domain', 'countryCode', 'totalReports', 'lastReportedAt']
-        
+    with open(json_temp_path, "r", encoding="utf-8") as json_file:
         for line in json_file:
             data = json.loads(line)["data"]
-            api_return_list.append({key: data.get(key) for key in keys})
+            api_return_list.append({key: data.get(key) for key in API_RESPONSE_FIELDS})
 
     cleared_list = clear_output(api_return_list, min_entry, whitelist_entry)
-    write_output_file(cleared_list, export_path)        
+    write_output_file(cleared_list, export_path)
 
     return api_return_list
 
-def browse_file(entry):     # Define a function to browse for a file
-    filename = filedialog.askopenfilename() # Open a file dialog and get the selected filename
-    entry.delete(0, tk.END) # Clear the entry box
-    entry.insert(0, filename) # Insert the filename into the entry box
 
-def browse_save_file(entry):  # Define a function to browse for a file save
-    filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])  # Open a save file dialog and get the selected filename
-    if filename:  # If a filename was selected
-        if os.path.exists(filename):  # If the file already exists
-            if messagebox.askokcancel("Warning", "The file already exists. Do you want to overwrite it?"):  # Ask the user if they want to overwrite the existing file
-                entry.delete(0, tk.END)  # Clear the entry box
-                entry.insert(0, filename)  # Insert the filename into the entry box
-        else:  # If the file does not exist
-            entry.delete(0, tk.END)  # Clear the entry box
-            entry.insert(0, filename)  # Insert the filename into the entry box
+def browse_file(entry: ttk.Entry) -> None:
+    """Open a dialog to select a file and populate the entry widget."""
 
-def main():
+    filename = filedialog.askopenfilename()
+    entry.delete(0, tk.END)
+    entry.insert(0, filename)
+
+
+def browse_save_file(entry: ttk.Entry) -> None:
+    """Open a dialog to select an output file and populate the entry widget."""
+
+    filename = filedialog.asksaveasfilename(
+        defaultextension=".csv", filetypes=[("CSV files", "*.csv")]
+    )
+    if filename:
+        if os.path.exists(filename):
+            if messagebox.askokcancel("Warning", "The file already exists. Do you want to overwrite it?"):
+                entry.delete(0, tk.END)
+                entry.insert(0, filename)
+        else:
+            entry.delete(0, tk.END)
+            entry.insert(0, filename)
+
+
+def main() -> None:
     global root
-    root = tk.Tk()  # Create the main window
-    root.title("4d4MP's AbuseIPDB Bulk Checker")  # Set the title of the window
-    root.geometry("620x600")  # Set the size of the window
+    root = tk.Tk()
+    root.title("4d4MP's AbuseIPDB Bulk Checker")
+    root.geometry("620x600")
 
-    frame = ttk.Frame(root, padding="10")  # Create a frame widget
-    frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))  # Place the frame on the grid
+    frame = ttk.Frame(root, padding="10")
+    frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
     # Create and place two title labels
     title_label1 = ttk.Label(frame, text="4d4MP's", font=("Sylfaen", 14, "italic"))
