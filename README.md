@@ -13,24 +13,31 @@ A Tkinter-based GUI utility for comparing two CSV exports and checking the resul
 
 - Python 3.9+
 - An AbuseIPDB API key
+- Python packages listed in [`requirements.txt`](requirements.txt)
 
-The GUI uses the standard library `tkinter` module. On some Linux distributions, you may need to install the `python3-tk` package separately.
+The original GUI uses the standard library `tkinter` module. On some Linux distributions, you may need to install the `python3-tk` package separately. The multi-day interface leverages [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) for a more modern widget set.
 
 ## Usage
 
-1. Install the dependencies listed in `requirements.txt` if present, or simply ensure `requests` is installed:
+1. Install the dependencies listed in `requirements.txt`:
 
    ```bash
-   pip install requests
+   pip install -r requirements.txt
    ```
 
-2. Run the application:
+2. Run the classic single-day application:
 
    ```bash
    python main.py
    ```
 
-3. Provide your API key and select the CSV input and output paths via the GUI. Adjust the minimum report threshold and ISP whitelist as needed, then click **ENGAGE** to start the scan.
+   Or launch the modern multi-day interface:
+
+   ```bash
+   python multi_day_ui.py
+   ```
+
+3. Provide your API key and select the CSV input and output paths via either GUI. Adjust the minimum report threshold and ISP whitelist as needed, then start the scan to generate the output CSV file(s).
 
 ## Output
 
