@@ -11,14 +11,15 @@ from typing import Callable, Dict, Iterable, List, Sequence
 
 import requests
 import ttkbootstrap as ttkb
-from ttkbootstrap.constants import BOTH, BOTTOM, CENTER, END, LEFT, TOP, W
+from ttkbootstrap.constants import BOTH, CENTER, END, TOP, W
 from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.scrolled import ScrolledText
 
 try:  # Python 3.11
-    from tkinter import filedialog
+    from tkinter import filedialog, TclError
 except ImportError:  # pragma: no cover - fallback for very old versions
     import tkinter.filedialog as filedialog
+    from tkinter import TclError
 
 # Standalone processing helpers derived from the original single-day tool.
 
@@ -284,6 +285,10 @@ class MultiDayApp:
         self.window = ttkb.Window(themename="superhero")
         self.window.title("AbuseIPDB Multi-day Bulk Checker")
         self.window.geometry("940x720")
+        try:
+            self.window.state("zoomed")
+        except TclError:
+            self.window.attributes("-zoomed", True)
 
         self.event_queue: UIEventQueue = UIEventQueue()
         self.day_rows: List[DayRow] = []
@@ -295,10 +300,9 @@ class MultiDayApp:
         header = ttkb.Label(
             self.window,
             text="AbuseIPDB Multi-day Bulk Checker",
-            font=("Segoe UI", 20, "bold"),
-            bootstyle="inverse",
+            font=("Segoe UI", 16, "bold"),
             anchor=CENTER,
-            padding=20,
+            padding=12,
         )
         header.pack(side=TOP, fill=BOTH)
 
@@ -307,7 +311,7 @@ class MultiDayApp:
 
         self.api_var = ttkb.StringVar()
         api_label = ttkb.Label(config_frame, text="API Key", font=("Segoe UI", 11, "bold"))
-        api_label.grid(row=0, column=0, sticky=W)
+        api_label.grid(row=0, column=0, columnspan=2, sticky=W)
         self.api_entry = ttkb.Entry(config_frame, textvariable=self.api_var, show="*")
         self.api_entry.grid(row=1, column=0, sticky="ew", padx=(0, 12))
 
@@ -320,14 +324,18 @@ class MultiDayApp:
         )
         reveal_button.grid(row=1, column=1, sticky=W)
 
-        min_label = ttkb.Label(config_frame, text="Minimum totalReports", font=("Segoe UI", 11, "bold"))
-        min_label.grid(row=0, column=2, padx=(20, 0), sticky=W)
+        min_label = ttkb.Label(
+            config_frame,
+            text="Minimum totalReports",
+            font=("Segoe UI", 11, "bold"),
+        )
+        min_label.grid(row=0, column=2, padx=(24, 0), sticky=W)
         self.min_var = ttkb.StringVar(value="100")
         self.min_entry = ttkb.Entry(config_frame, textvariable=self.min_var, width=10)
-        self.min_entry.grid(row=1, column=2, sticky=W)
+        self.min_entry.grid(row=1, column=2, sticky=W, padx=(24, 0))
 
-        whitelist_label = ttkb.Label(config_frame, text="Whitelisted ISPs (comma separated)")
-        whitelist_label.grid(row=0, column=3, padx=(20, 0), sticky=W)
+        whitelist_label = ttkb.Label(config_frame, text="Whitelisted ISPs")
+        whitelist_label.grid(row=0, column=3, sticky=W)
         self.whitelist_var = ttkb.StringVar(
             value=(
                 "Akamai Technologies, Google, Palo Alto Networks, "
@@ -338,6 +346,8 @@ class MultiDayApp:
         self.whitelist_entry.grid(row=1, column=3, sticky="ew")
 
         config_frame.columnconfigure(0, weight=2)
+        config_frame.columnconfigure(1, weight=0)
+        config_frame.columnconfigure(2, weight=1)
         config_frame.columnconfigure(3, weight=2)
 
         add_button = ttkb.Button(
@@ -353,9 +363,18 @@ class MultiDayApp:
 
         headings = ttkb.Frame(self.rows_container)
         headings.pack(side=TOP, fill="x")
-        ttkb.Label(headings, text="CSV Day A", width=25, anchor=W).pack(side=LEFT, padx=5)
-        ttkb.Label(headings, text="CSV Day B", width=25, anchor=W).pack(side=LEFT, padx=5)
-        ttkb.Label(headings, text="Export File", width=25, anchor=W).pack(side=LEFT, padx=5)
+        for col in range(7):
+            weight = 1 if col in (0, 2, 4) else 0
+            headings.columnconfigure(col, weight=weight)
+        ttkb.Label(headings, text="Input CSV 1", anchor=W).grid(
+            row=0, column=0, columnspan=2, sticky=W, padx=5
+        )
+        ttkb.Label(headings, text="Input CSV 2", anchor=W).grid(
+            row=0, column=2, columnspan=2, sticky=W, padx=5
+        )
+        ttkb.Label(headings, text="Export File", anchor=W).grid(
+            row=0, column=4, columnspan=2, sticky=W, padx=5
+        )
 
         self.rows_frame = ttkb.Frame(self.rows_container)
         self.rows_frame.pack(side=TOP, fill=BOTH, expand=True)
@@ -380,36 +399,39 @@ class MultiDayApp:
     def add_row(self) -> None:
         row_frame = ttkb.Frame(self.rows_frame, padding=10, bootstyle="secondary")
         row_frame.pack(side=TOP, fill="x", pady=6)
+        for col in range(7):
+            weight = 1 if col in (0, 2, 4) else 0
+            row_frame.columnconfigure(col, weight=weight)
 
         csv1_entry = ttkb.Entry(row_frame, width=30)
-        csv1_entry.pack(side=LEFT, padx=5, fill="x", expand=True)
+        csv1_entry.grid(row=0, column=0, sticky="ew", padx=5)
         csv1_button = ttkb.Button(
             row_frame,
             text="Browse",
             bootstyle="info-outline",
             command=lambda e=csv1_entry: self._browse_into_entry(e, _ask_open_file),
         )
-        csv1_button.pack(side=LEFT, padx=(0, 10))
+        csv1_button.grid(row=0, column=1, padx=(0, 10))
 
         csv2_entry = ttkb.Entry(row_frame, width=30)
-        csv2_entry.pack(side=LEFT, padx=5, fill="x", expand=True)
+        csv2_entry.grid(row=0, column=2, sticky="ew", padx=5)
         csv2_button = ttkb.Button(
             row_frame,
             text="Browse",
             bootstyle="info-outline",
             command=lambda e=csv2_entry: self._browse_into_entry(e, _ask_open_file),
         )
-        csv2_button.pack(side=LEFT, padx=(0, 10))
+        csv2_button.grid(row=0, column=3, padx=(0, 10))
 
         export_entry = ttkb.Entry(row_frame, width=30)
-        export_entry.pack(side=LEFT, padx=5, fill="x", expand=True)
+        export_entry.grid(row=0, column=4, sticky="ew", padx=5)
         export_button = ttkb.Button(
             row_frame,
             text="Save As",
             bootstyle="warning-outline",
             command=lambda e=export_entry: self._browse_into_entry(e, _ask_save_file),
         )
-        export_button.pack(side=LEFT, padx=(0, 10))
+        export_button.grid(row=0, column=5, padx=(0, 10))
 
         remove_button = ttkb.Button(
             row_frame,
@@ -417,13 +439,13 @@ class MultiDayApp:
             bootstyle="secondary-link",
             command=lambda rf=row_frame: self._remove_row(rf),
         )
-        remove_button.pack(side=LEFT)
+        remove_button.grid(row=0, column=6, padx=(0, 5))
 
         progress = ttkb.Progressbar(row_frame, bootstyle="info-striped", length=180)
-        progress.pack(side=BOTTOM, fill="x", expand=True, pady=(12, 0))
+        progress.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(12, 0))
 
         status_label = ttkb.Label(row_frame, text="Waiting", bootstyle="secondary")
-        status_label.pack(side=BOTTOM, anchor=W)
+        status_label.grid(row=2, column=0, columnspan=7, sticky=W, pady=(4, 0))
 
         self.day_rows.append(
             DayRow(
