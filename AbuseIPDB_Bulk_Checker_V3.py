@@ -93,12 +93,19 @@ def clear_output(
     return return_list
 
 
-def write_output_file(cleared_list: Sequence[Dict[str, object]], export_path: str) -> None:
+def write_output_file(
+    cleared_list: Sequence[Dict[str, object]], export_path: str, *, append: bool = False
+) -> None:
     """Write the processed results to a CSV file."""
 
-    with open(export_path, "w", newline="", encoding="utf-8") as csv_file:
+    export_path_obj = Path(export_path)
+    mode = "a" if append else "w"
+    write_header = not append or not export_path_obj.exists()
+
+    with open(export_path, mode, newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=API_RESPONSE_FIELDS)
-        writer.writeheader()
+        if write_header:
+            writer.writeheader()
         writer.writerows(cleared_list)
 
 
@@ -121,6 +128,7 @@ class DayRow:
     csv1_entry: ttkb.Entry
     csv2_entry: ttkb.Entry
     export_entry: ttkb.Entry
+    export_button: ttkb.Button
     progress: ttkb.Progressbar
     status_label: ttkb.Label
 
@@ -131,13 +139,23 @@ class DayRow:
             self.export_entry.get().strip(),
         )
 
-    def has_all_values(self) -> bool:
+    def has_all_values(self, *, require_export: bool = True) -> bool:
         csv1, csv2, export = self.values()
-        return bool(csv1 and csv2 and export)
+        if require_export:
+            return bool(csv1 and csv2 and export)
+        return bool(csv1 and csv2)
 
     def clear_progress(self) -> None:
         self.progress.configure(value=0)
         self.status_label.configure(text="Waiting")
+
+    def set_export_visible(self, visible: bool) -> None:
+        if visible:
+            self.export_entry.grid()
+            self.export_button.grid()
+        else:
+            self.export_entry.grid_remove()
+            self.export_button.grid_remove()
 
 
 def _ask_open_file() -> str:
@@ -190,6 +208,8 @@ def _process_single_day(
     min_entry: str,
     whitelist_entry: str,
     queue_: UIEventQueue,
+    *,
+    merge_files: bool = False,
 ) -> None:
     try:
         _update_status(queue_, row_index, message="Loading input files...")
@@ -208,7 +228,13 @@ def _process_single_day(
     total_rows = max(len(ip_list), 1)
     successful_responses: List[Dict[str, object]] = []
     export_path_obj = Path(export_path)
-    temp_path = export_path_obj.with_suffix(".jsonl")
+    if merge_files:
+        temp_path = (
+            export_path_obj.parent
+            / f"{export_path_obj.stem}_{row_index}.jsonl"
+        )
+    else:
+        temp_path = export_path_obj.with_suffix(".jsonl")
 
     if not ip_list:
         _update_status(queue_, row_index, message="No IPs found, writing empty output...")
@@ -261,7 +287,11 @@ def _process_single_day(
         cleared_list = clear_output(api_return_list, min_entry, whitelist_entry)
         export_path_obj.parent.mkdir(parents=True, exist_ok=True)
         with FILE_WRITE_LOCK:
-            write_output_file(cleared_list, str(export_path_obj))
+            write_output_file(
+                cleared_list,
+                str(export_path_obj),
+                append=merge_files,
+            )
         _update_status(
             queue_,
             row_index,
@@ -339,7 +369,7 @@ class MultiDayApp:
         self.whitelist_var = ttkb.StringVar(
             value=(
                 "Akamai Technologies, Google, Palo Alto Networks, "
-                "The Shadowserver Foundation, Censys, Contabo"
+                "The Shadowserver Foundation, Censys"
             )
         )
         self.whitelist_entry = ttkb.Entry(config_frame, textvariable=self.whitelist_var, width=35)
@@ -349,6 +379,32 @@ class MultiDayApp:
         config_frame.columnconfigure(1, weight=0)
         config_frame.columnconfigure(2, weight=1)
         config_frame.columnconfigure(3, weight=2)
+
+        merge_frame = ttkb.Frame(self.window, padding=(20, 0))
+        merge_frame.pack(side=TOP, fill=BOTH)
+        merge_frame.columnconfigure(2, weight=1)
+
+        self.merge_var = ttkb.BooleanVar(value=True)
+        merge_check = ttkb.Checkbutton(
+            merge_frame,
+            text="Merge files into single output",
+            variable=self.merge_var,
+            bootstyle="round-toggle",
+            command=self._on_merge_toggle,
+        )
+        merge_check.grid(row=0, column=0, sticky=W)
+
+        self.general_output_label = ttkb.Label(merge_frame, text="Output file")
+        self.general_output_label.grid(row=0, column=1, padx=(20, 5), sticky=W)
+        self.general_output_entry = ttkb.Entry(merge_frame, width=40)
+        self.general_output_entry.grid(row=0, column=2, sticky="ew", padx=5)
+        self.general_output_button = ttkb.Button(
+            merge_frame,
+            text="Save As",
+            bootstyle="warning-outline",
+            command=lambda: self._browse_into_entry(self.general_output_entry, _ask_save_file),
+        )
+        self.general_output_button.grid(row=0, column=3, padx=(0, 10))
 
         add_button = ttkb.Button(
             self.window,
@@ -372,9 +428,8 @@ class MultiDayApp:
         ttkb.Label(headings, text="Input CSV 2", anchor=W).grid(
             row=0, column=2, columnspan=2, sticky=W, padx=5
         )
-        ttkb.Label(headings, text="Export File", anchor=W).grid(
-            row=0, column=4, columnspan=2, sticky=W, padx=5
-        )
+        self.export_heading = ttkb.Label(headings, text="Export File", anchor=W)
+        self.export_heading.grid(row=0, column=4, columnspan=2, sticky=W, padx=5)
 
         self.rows_frame = ttkb.Frame(self.rows_container)
         self.rows_frame.pack(side=TOP, fill=BOTH, expand=True)
@@ -391,10 +446,35 @@ class MultiDayApp:
         run_button.pack(side=TOP, pady=10)
 
         self.add_row()
+        self._on_merge_toggle()
 
     def _toggle_api_visibility(self) -> None:
         show_char = self.api_entry.cget("show")
         self.api_entry.configure(show="" if show_char else "*")
+
+    def _show_general_output_controls(self) -> None:
+        self.general_output_label.grid()
+        self.general_output_entry.grid()
+        self.general_output_button.grid()
+
+    def _hide_general_output_controls(self) -> None:
+        self.general_output_label.grid_remove()
+        self.general_output_entry.grid_remove()
+        self.general_output_button.grid_remove()
+
+    def _on_merge_toggle(self) -> None:
+        merge_files = self.merge_var.get()
+        if merge_files:
+            self._show_general_output_controls()
+            if hasattr(self, "export_heading"):
+                self.export_heading.grid_remove()
+        else:
+            self._hide_general_output_controls()
+            if hasattr(self, "export_heading"):
+                self.export_heading.grid()
+
+        for row in self.day_rows:
+            row.set_export_visible(not merge_files)
 
     def add_row(self) -> None:
         row_frame = ttkb.Frame(self.rows_frame, padding=10, bootstyle="secondary")
@@ -453,10 +533,13 @@ class MultiDayApp:
                 csv1_entry=csv1_entry,
                 csv2_entry=csv2_entry,
                 export_entry=export_entry,
+                export_button=export_button,
                 progress=progress,
                 status_label=status_label,
             )
         )
+
+        self.day_rows[-1].set_export_visible(not self.merge_var.get())
 
     def _remove_row(self, frame: ttkb.Frame) -> None:
         if len(self.day_rows) == 1:
@@ -484,9 +567,29 @@ class MultiDayApp:
         min_entry = self.min_var.get().strip()
         whitelist_entry = self.whitelist_var.get().strip()
 
-        valid_rows = [row for row in self.day_rows if row.has_all_values()]
+        merge_files = self.merge_var.get()
+        merged_export_path = self.general_output_entry.get().strip()
+
+        if merge_files and not merged_export_path:
+            Messagebox.show_warning(
+                "Please provide an output file path for the merged results."
+            )
+            return
+
+        valid_rows = [
+            row
+            for row in self.day_rows
+            if row.has_all_values(require_export=not merge_files)
+        ]
         if not valid_rows:
-            Messagebox.show_warning("Please provide all three paths for at least one row.")
+            if merge_files:
+                Messagebox.show_warning(
+                    "Please provide both input CSV paths for at least one row."
+                )
+            else:
+                Messagebox.show_warning(
+                    "Please provide all three paths for at least one row."
+                )
             return
 
         for row in valid_rows:
@@ -496,7 +599,14 @@ class MultiDayApp:
 
         worker_thread = threading.Thread(
             target=self._execute_checks,
-            args=(valid_rows, api_key, min_entry, whitelist_entry),
+            args=(
+                valid_rows,
+                api_key,
+                min_entry,
+                whitelist_entry,
+                merge_files,
+                merged_export_path,
+            ),
             daemon=True,
         )
         worker_thread.start()
@@ -507,11 +617,21 @@ class MultiDayApp:
         api_key: str,
         min_entry: str,
         whitelist_entry: str,
+        merge_files: bool,
+        merged_export_path: str,
     ) -> None:
+        combined_path: Path | None = None
+        if merge_files:
+            combined_path = Path(merged_export_path)
+            combined_path.parent.mkdir(parents=True, exist_ok=True)
+            combined_path.unlink(missing_ok=True)
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(rows)) as executor:
             tasks = []
             for index, row in enumerate(rows):
                 csv1, csv2, export_path = row.values()
+                if merge_files:
+                    export_path = merged_export_path
                 tasks.append(
                     executor.submit(
                         _process_single_day,
@@ -523,6 +643,7 @@ class MultiDayApp:
                         min_entry,
                         whitelist_entry,
                         self.event_queue,
+                        merge_files=merge_files,
                     )
                 )
 
@@ -532,7 +653,11 @@ class MultiDayApp:
                 except Exception as exc:  # pragma: no cover - defensive
                     self.event_queue.post("log", message=f"Worker crashed: {exc}")
 
-        self.event_queue.post("log", message="All checks complete.")
+        if merge_files and combined_path is not None:
+            message = f"All checks complete. Output saved to {combined_path}."
+        else:
+            message = "All checks complete."
+        self.event_queue.post("log", message=message)
 
     def _process_events(self) -> None:
         try:
