@@ -3,9 +3,12 @@ from __future__ import annotations
 import concurrent.futures
 import csv
 import json
+import os
+import platform
 import queue
+import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Sequence
 
@@ -16,10 +19,10 @@ from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.scrolled import ScrolledText
 
 try:  # Python 3.11
-    from tkinter import filedialog, TclError
+    from tkinter import filedialog, Menu, TclError
 except ImportError:  # pragma: no cover - fallback for very old versions
     import tkinter.filedialog as filedialog
-    from tkinter import TclError
+    from tkinter import Menu, TclError
 
 # Standalone processing helpers derived from the original single-day tool.
 
@@ -129,8 +132,12 @@ class DayRow:
     csv2_entry: ttkb.Entry
     export_entry: ttkb.Entry
     export_button: ttkb.Button
+    options_button: ttkb.Button
+    options_menu: Menu
+    open_file_menu_index: int
     progress: ttkb.Progressbar
     status_label: ttkb.Label
+    saved_export_path: str | None = field(default=None)
 
     def values(self) -> tuple[str, str, str]:
         return (
@@ -153,9 +160,15 @@ class DayRow:
         if visible:
             self.export_entry.grid()
             self.export_button.grid()
+            self.options_button.grid()
         else:
             self.export_entry.grid_remove()
             self.export_button.grid_remove()
+            self.options_button.grid_remove()
+
+    def set_open_file_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.options_menu.entryconfigure(self.open_file_menu_index, state=state)
 
 
 def _ask_open_file() -> str:
@@ -292,6 +305,12 @@ def _process_single_day(
                 str(export_path_obj),
                 append=merge_files,
             )
+        queue_.post(
+            "file_saved",
+            index=row_index,
+            export_path=str(export_path_obj),
+            merge=merge_files,
+        )
         _update_status(
             queue_,
             row_index,
@@ -322,6 +341,10 @@ class MultiDayApp:
 
         self.event_queue: UIEventQueue = UIEventQueue()
         self.day_rows: List[DayRow] = []
+        self.general_options_button: ttkb.Button | None = None
+        self.general_options_menu: Menu | None = None
+        self.general_open_file_index: int | None = None
+        self.saved_merged_path: str | None = None
 
         self._build_ui()
         self.window.after(100, self._process_events)
@@ -383,6 +406,7 @@ class MultiDayApp:
         merge_frame = ttkb.Frame(self.window, padding=(20, 0))
         merge_frame.pack(side=TOP, fill=BOTH)
         merge_frame.columnconfigure(2, weight=1)
+        merge_frame.columnconfigure(4, weight=0)
 
         self.merge_var = ttkb.BooleanVar(value=True)
         merge_check = ttkb.Checkbutton(
@@ -406,6 +430,26 @@ class MultiDayApp:
         )
         self.general_output_button.grid(row=0, column=3, padx=(0, 10))
 
+        self.general_options_button = ttkb.Button(
+            merge_frame,
+            text="...",
+            bootstyle="secondary-outline",
+            width=2,
+            command=self._show_general_options_menu,
+        )
+        self.general_options_button.grid(row=0, column=4, padx=(0, 10))
+        self.general_options_menu = Menu(self.general_options_button, tearoff=False)
+        self.general_options_menu.add_command(
+            label="Open Save Folder",
+            command=self._open_general_save_folder,
+        )
+        self.general_options_menu.add_command(
+            label="Open Finished File",
+            state="disabled",
+            command=self._open_general_export_file,
+        )
+        self.general_open_file_index = self.general_options_menu.index("end")
+
         add_button = ttkb.Button(
             self.window,
             text="Add Day",
@@ -419,7 +463,7 @@ class MultiDayApp:
 
         headings = ttkb.Frame(self.rows_container)
         headings.pack(side=TOP, fill="x")
-        for col in range(7):
+        for col in range(8):
             weight = 1 if col in (0, 2, 4) else 0
             headings.columnconfigure(col, weight=weight)
         ttkb.Label(headings, text="Input CSV 1", anchor=W).grid(
@@ -452,15 +496,89 @@ class MultiDayApp:
         show_char = self.api_entry.cget("show")
         self.api_entry.configure(show="" if show_char else "*")
 
+    def _show_general_options_menu(self) -> None:
+        if self.general_options_menu and self.general_options_button:
+            self._show_menu(self.general_options_menu, self.general_options_button)
+
+    def _show_menu(self, menu: Menu, widget: ttkb.Button) -> None:
+        try:
+            menu.tk_popup(
+                widget.winfo_rootx(),
+                widget.winfo_rooty() + widget.winfo_height(),
+            )
+        finally:  # pragma: no branch - tk quirk
+            menu.grab_release()
+
+    def _open_general_save_folder(self) -> None:
+        self._open_export_folder(self.general_output_entry.get().strip())
+
+    def _open_general_export_file(self) -> None:
+        self._open_saved_file(self.saved_merged_path)
+
+    def _open_row_export_folder(self, row: DayRow) -> None:
+        self._open_export_folder(row.export_entry.get().strip())
+
+    def _open_row_export_file(self, row: DayRow) -> None:
+        self._open_saved_file(row.saved_export_path)
+
+    def _open_export_folder(self, raw_path: str) -> None:
+        if not raw_path:
+            Messagebox.show_warning("Please choose an export location first.")
+            return
+
+        candidate = Path(raw_path).expanduser()
+        folder = candidate if candidate.is_dir() else candidate.parent
+        if not folder.exists():
+            Messagebox.show_warning("The folder does not exist yet.")
+            return
+
+        self._open_with_system(folder)
+
+    def _open_saved_file(self, path: str | None) -> None:
+        if not path:
+            Messagebox.show_warning("There is no saved file to open yet.")
+            return
+
+        file_path = Path(path)
+        if not file_path.exists():
+            Messagebox.show_warning("The saved file is not available on disk.")
+            return
+
+        self._open_with_system(file_path)
+
+    def _open_with_system(self, target: Path) -> None:
+        try:
+            system = platform.system()
+            target_str = str(target)
+            if system == "Windows":
+                os.startfile(target_str)  # type: ignore[attr-defined]
+            elif system == "Darwin":
+                subprocess.Popen(["open", target_str])
+            else:
+                subprocess.Popen(["xdg-open", target_str])
+        except Exception as exc:  # pragma: no cover - OS interaction
+            Messagebox.show_error(f"Unable to open {target}: {exc}")
+
+    def _set_general_open_file_enabled(self, enabled: bool) -> None:
+        if self.general_options_menu is None or self.general_open_file_index is None:
+            return
+        state = "normal" if enabled else "disabled"
+        self.general_options_menu.entryconfigure(self.general_open_file_index, state=state)
+
     def _show_general_output_controls(self) -> None:
         self.general_output_label.grid()
         self.general_output_entry.grid()
         self.general_output_button.grid()
+        if self.general_options_button is not None:
+            self.general_options_button.grid()
+            self._set_general_open_file_enabled(self.saved_merged_path is not None)
 
     def _hide_general_output_controls(self) -> None:
         self.general_output_label.grid_remove()
         self.general_output_entry.grid_remove()
         self.general_output_button.grid_remove()
+        if self.general_options_button is not None:
+            self.general_options_button.grid_remove()
 
     def _on_merge_toggle(self) -> None:
         merge_files = self.merge_var.get()
@@ -479,7 +597,7 @@ class MultiDayApp:
     def add_row(self) -> None:
         row_frame = ttkb.Frame(self.rows_frame, padding=10, bootstyle="secondary")
         row_frame.pack(side=TOP, fill="x", pady=6)
-        for col in range(7):
+        for col in range(8):
             weight = 1 if col in (0, 2, 4) else 0
             row_frame.columnconfigure(col, weight=weight)
 
@@ -513,33 +631,61 @@ class MultiDayApp:
         )
         export_button.grid(row=0, column=5, padx=(0, 10))
 
+        options_menu = Menu(row_frame, tearoff=False)
+        options_menu.add_command(label="Open Save Folder")
+        options_menu.add_command(label="Open Finished File", state="disabled")
+        open_file_index = options_menu.index("end")
+        options_button = ttkb.Button(
+            row_frame,
+            text="...",
+            bootstyle="secondary-outline",
+            width=2,
+            command=lambda: None,
+        )
+        options_button.grid(row=0, column=6, padx=(0, 10))
+
         remove_button = ttkb.Button(
             row_frame,
             text="Remove",
             bootstyle="secondary-link",
             command=lambda rf=row_frame: self._remove_row(rf),
         )
-        remove_button.grid(row=0, column=6, padx=(0, 5))
+        remove_button.grid(row=0, column=7, padx=(0, 5))
 
         progress = ttkb.Progressbar(row_frame, bootstyle="info-striped", length=180)
-        progress.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(12, 0))
+        progress.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(12, 0))
 
         status_label = ttkb.Label(row_frame, text="Waiting", bootstyle="secondary")
-        status_label.grid(row=2, column=0, columnspan=7, sticky=W, pady=(4, 0))
+        status_label.grid(row=2, column=0, columnspan=8, sticky=W, pady=(4, 0))
 
-        self.day_rows.append(
-            DayRow(
-                container=row_frame,
-                csv1_entry=csv1_entry,
-                csv2_entry=csv2_entry,
-                export_entry=export_entry,
-                export_button=export_button,
-                progress=progress,
-                status_label=status_label,
-            )
+        new_row = DayRow(
+            container=row_frame,
+            csv1_entry=csv1_entry,
+            csv2_entry=csv2_entry,
+            export_entry=export_entry,
+            export_button=export_button,
+            options_button=options_button,
+            options_menu=options_menu,
+            open_file_menu_index=open_file_index,
+            progress=progress,
+            status_label=status_label,
         )
 
-        self.day_rows[-1].set_export_visible(not self.merge_var.get())
+        self.day_rows.append(new_row)
+
+        options_button.configure(
+            command=lambda m=options_menu, b=options_button: self._show_menu(m, b)
+        )
+        options_menu.entryconfigure(
+            0, command=lambda r=new_row: self._open_row_export_folder(r)
+        )
+        options_menu.entryconfigure(
+            new_row.open_file_menu_index,
+            command=lambda r=new_row: self._open_row_export_file(r),
+        )
+
+        new_row.set_open_file_enabled(False)
+        new_row.set_export_visible(not self.merge_var.get())
 
     def _remove_row(self, frame: ttkb.Frame) -> None:
         if len(self.day_rows) == 1:
@@ -594,6 +740,12 @@ class MultiDayApp:
 
         for row in valid_rows:
             row.clear_progress()
+
+        self.saved_merged_path = None
+        self._set_general_open_file_enabled(False)
+        for row in self.day_rows:
+            row.saved_export_path = None
+            row.set_open_file_enabled(False)
 
         self.log_output.delete("1.0", END)
 
@@ -670,6 +822,8 @@ class MultiDayApp:
                     if message:
                         self.log_output.insert(END, message + "\n")
                         self.log_output.see(END)
+                elif event == "file_saved":
+                    self._handle_file_saved(payload)
                 else:
                     message = payload.get("message", "")
                     if message:
@@ -698,6 +852,22 @@ class MultiDayApp:
         if append_log:
             self.log_output.insert(END, append_log + "\n")
             self.log_output.see(END)
+
+    def _handle_file_saved(self, payload: dict) -> None:
+        index = payload.get("index")
+        export_path = payload.get("export_path")
+        merge = payload.get("merge")
+
+        if merge:
+            self.saved_merged_path = export_path
+            self._set_general_open_file_enabled(bool(export_path))
+
+        if index is None or not (0 <= index < len(self.day_rows)):
+            return
+
+        row = self.day_rows[index]
+        row.saved_export_path = export_path
+        row.set_open_file_enabled(bool(export_path))
 
     def run(self) -> None:
         self.window.mainloop()
