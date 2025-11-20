@@ -10,7 +10,7 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Sequence
+from typing import Callable, Dict, Iterable, List, Sequence, Set
 
 import requests
 import ttkbootstrap as ttkb
@@ -223,6 +223,7 @@ def _process_single_day(
     queue_: UIEventQueue,
     *,
     merge_files: bool = False,
+    merged_seen_ips: Set[str] | None = None,
 ) -> None:
     try:
         _update_status(queue_, row_index, message="Loading input files...")
@@ -299,12 +300,29 @@ def _process_single_day(
     try:
         cleared_list = clear_output(api_return_list, min_entry, whitelist_entry)
         export_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        with FILE_WRITE_LOCK:
-            write_output_file(
-                cleared_list,
-                str(export_path_obj),
-                append=merge_files,
-            )
+        if merge_files and merged_seen_ips is not None:
+            with FILE_WRITE_LOCK:
+                unique_entries: List[Dict[str, object]] = []
+                for entry in cleared_list:
+                    ip = str(entry.get("ipAddress") or "")
+                    if not ip or ip in merged_seen_ips:
+                        continue
+                    merged_seen_ips.add(ip)
+                    unique_entries.append(entry)
+
+                write_output_file(
+                    unique_entries,
+                    str(export_path_obj),
+                    append=True,
+                )
+                cleared_list = unique_entries
+        else:
+            with FILE_WRITE_LOCK:
+                write_output_file(
+                    cleared_list,
+                    str(export_path_obj),
+                    append=merge_files,
+                )
         queue_.post(
             "file_saved",
             index=row_index,
@@ -773,10 +791,12 @@ class MultiDayApp:
         merged_export_path: str,
     ) -> None:
         combined_path: Path | None = None
+        merged_seen_ips: Set[str] | None = None
         if merge_files:
             combined_path = Path(merged_export_path)
             combined_path.parent.mkdir(parents=True, exist_ok=True)
             combined_path.unlink(missing_ok=True)
+            merged_seen_ips = set()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(rows)) as executor:
             tasks = []
@@ -796,6 +816,7 @@ class MultiDayApp:
                         whitelist_entry,
                         self.event_queue,
                         merge_files=merge_files,
+                        merged_seen_ips=merged_seen_ips,
                     )
                 )
 
