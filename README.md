@@ -4,10 +4,10 @@ A Tkinter-based GUI utility for comparing two CSV exports and checking the resul
 
 ## Features
 
-- Loads two CSV files and merges their unique IP addresses while preserving order.
-- Executes AbuseIPDB lookups in parallel to reduce overall runtime.
-- Filters results by minimum `totalReports` value and ISP whitelist entries.
-- Writes a CSV export containing the curated results.
+- Load two CSV files and merge their unique IP addresses while preserving order.
+- Execute AbuseIPDB lookups in parallel to reduce overall runtime.
+- Filter results by minimum `totalReports` value and ISP whitelist entries.
+- Write a CSV export containing the curated results.
 
 ## Requirements
 
@@ -15,7 +15,7 @@ A Tkinter-based GUI utility for comparing two CSV exports and checking the resul
 - An AbuseIPDB API key
 - Python packages listed in [`requirements.txt`](requirements.txt)
 
-The original GUI uses the standard library `tkinter` module. On some Linux distributions, you may need to install the `python3-tk` package separately. The multi-day interface leverages [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) for a more modern widget set.
+The GUI uses the standard library `tkinter` module. On some Linux distributions, you may need to install the `python3-tk` package separately. The interface leverages [`ttkbootstrap`](https://ttkbootstrap.readthedocs.io/) for a modern widget set.
 
 ## Usage
 
@@ -25,19 +25,13 @@ The original GUI uses the standard library `tkinter` module. On some Linux distr
    pip install -r requirements.txt
    ```
 
-2. Run the classic single-day application:
+2. Launch the application:
 
    ```bash
-   python main.py
+   python AbuseIPDB_Bulk_Checker.py
    ```
 
-   Or launch the modern multi-day interface:
-
-   ```bash
-   python multi_day_ui.py
-   ```
-
-3. Provide your API key and select the CSV input and output paths via either GUI. Adjust the minimum report threshold and ISP whitelist as needed, then start the scan to generate the output CSV file(s).
+3. Provide your API key and select the CSV input and output paths via the GUI. Adjust the minimum report threshold and ISP whitelist as needed, then start the scan to generate the output CSV file(s).
 
 ## Output
 
